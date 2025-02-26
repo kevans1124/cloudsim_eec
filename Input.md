@@ -38,4 +38,18 @@ task class:
         Seed: 520230
 }
 
+task class:
+{
+        Start time: 10000
+        End time : 500000
+        Inter arrival: 5000
+        Expected runtime: 500000
+        Memory: 4
+        VM type: LINUX
+        GPU enabled: no
+        SLA type: SLA1
+        CPU type: X86
+        Task type: WEB
+        Seed: 123456
+}
 
