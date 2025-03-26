@@ -6,6 +6,7 @@
 //
 
 #include "Scheduler.hpp"
+#include <cfloat>
 
 static bool migrating = false;
 static unsigned active_machines = 16;
@@ -64,13 +65,59 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     // Turn on a machine, migrate an existing VM from a loaded machine....
     //
     // Other possibilities as desired
-    Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
-    if(migrating) {
-        VM_AddTask(vms[0], task_id, priority);
+    TaskInfo_t task = GetTaskInfo(task_id);
+    unsigned num_machines = Machine_GetTotal();
+
+    MachineId_t best_machine = -1;
+    double min_time = DBL_MAX;
+    Priority_t priority;
+
+    // Step 1: Determine task priority based on SLA
+    switch (task.required_sla) {
+        case SLA0: priority = HIGH_PRIORITY; break;  // Most time-sensitive
+        case SLA1: priority = HIGH_PRIORITY; break;
+        case SLA2: priority = MID_PRIORITY; break;
+        case SLA3: priority = LOW_PRIORITY; break;  // Best effort, lower priority
     }
-    else {
-        VM_AddTask(vms[task_id % active_machines], task_id, priority);
-    }// Skeleton code, you need to change it according to your algorithm
+
+    // Step 2: Find the best machine based on SLA-aware execution time
+    for (unsigned i = 0; i < num_machines; i++) {
+        MachineInfo_t machine = Machine_GetInfo(i);
+
+        // Only consider active machines with enough memory
+        if (machine.s_state == S0 && (machine.memory_size - machine.memory_used) >= task.required_memory) {
+            double exec_time = (double)task.total_instructions / machine.performance[0]; // P0 MIPS
+
+            // If SLA is strict, prioritize machines with GPUs (if task benefits from GPUs)
+            if ((task.required_sla == SLA0 || task.required_sla == SLA1) && task.gpu_capable && !machine.gpus)
+                continue;  // Skip non-GPU machines for GPU-intensive tasks
+
+            // Choose the machine with the minimum execution time
+            if (exec_time < min_time) {
+                min_time = exec_time;
+                best_machine = i;
+            }
+        }
+    }
+
+    // Step 3: Assign task to best machine or wake up a sleeping one
+    if (best_machine != -1) {
+        VMId_t vm = VM_Create(task.required_vm, task.required_cpu);
+        VM_Attach(vm, best_machine);
+        VM_AddTask(vm, task_id, priority);
+    } else {
+        // If no active machine can take the task, power on an idle one
+        for (unsigned i = 0; i < num_machines; i++) {
+            MachineInfo_t machine = Machine_GetInfo(i);
+            if (machine.s_state != S0) {  // Found a sleeping machine
+                Machine_SetState(i, S0);
+                VMId_t vm = VM_Create(task.required_vm, task.required_cpu);
+                VM_Attach(vm, i);
+                 VM_AddTask(vm, task_id, priority);
+                break;
+            }
+        }
+    }
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -156,7 +203,7 @@ void SimulationComplete(Time_t time) {
 }
 
 void SLAWarning(Time_t time, TaskId_t task_id) {
-    
+
 }
 
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {
