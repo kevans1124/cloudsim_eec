@@ -6,9 +6,12 @@
 //
 
 #include "Scheduler.hpp"
+#include <queue>
 
 static bool migrating = false;
 static unsigned active_machines = 16;
+static std::queue<TaskId_t> taskQueue;
+
 
 void Scheduler::Init() {
     // Find the parameters of the clusters
@@ -64,13 +67,29 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     // Turn on a machine, migrate an existing VM from a loaded machine....
     //
     // Other possibilities as desired
-    Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
-    if(migrating) {
-        VM_AddTask(vms[0], task_id, priority);
+    SimOutput("Scheduler::NewTask(): Received task " + to_string(task_id) + " at time " + to_string(now), 4);
+    
+    // Add the task to the queue
+    taskQueue.push(task_id);
+
+    // Try to process tasks
+    ProcessQueue();
+    // Skeleton code, you need to change it according to your algorithm
+}
+
+void Scheduler::ProcessQueue() {
+    if (taskQueue.empty()) return; // No tasks to schedule
+
+    for (auto& vm : vms) {
+        if (!taskQueue.empty()) {
+            TaskId_t task_id = taskQueue.front();
+            taskQueue.pop();
+
+            // Assign the task to the VM
+            VM_AddTask(vm, task_id, MID_PRIORITY);
+            SimOutput("Scheduler::ProcessQueue(): Assigned task " + to_string(task_id) + " to VM " + to_string(vm), 4);
+        }
     }
-    else {
-        VM_AddTask(vms[task_id % active_machines], task_id, priority);
-    }// Skeleton code, you need to change it according to your algorithm
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
@@ -96,7 +115,10 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
     // Do any bookkeeping necessary for the data structures
     // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
     // This is an opportunity to make any adjustments to optimize performance/energy
-    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
+    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " completed at time " + to_string(now), 4);
+    
+    // Process the next task in queue
+    ProcessQueue();
 }
 
 // Public interface below
