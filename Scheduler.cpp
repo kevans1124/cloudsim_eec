@@ -8,6 +8,7 @@
 #include "Scheduler.hpp"
 #include <climits>
 #include <unordered_set>
+#include <unordered_map>
 #include <algorithm>
 
 
@@ -17,18 +18,17 @@
 //static bool migrating = true; 
 static vector<VMId_t> vms;
 static vector<MachineId_t> machines;
-static unordered_map<TaskId_t, VMId_t> task_to_vms;
+static unordered_map <TaskId_t, VMId_t> task_to_vms;
 static unordered_set<VMId_t> vms_migrating;
 static unsigned active_machines;
 
 
 
 void Scheduler::Init() {
-    // find total machines from the system
+    // Initialize the scheduler by retrieving total machines in the system
     unsigned total_machines = Machine_GetTotal();
     active_machines = total_machines;
 
-    // fill 'machines' vector with all MachineId_t
     for(unsigned i = 0; i < active_machines; i++) {
         MachineId_t machine_id = i;
         machines.push_back(machine_id);
@@ -52,7 +52,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     TaskInfo_t task_info = GetTaskInfo(task_id);
     unsigned task_memory = GetTaskMemory(task_id);
 
-    // Set priority based on SLA
+    // Determine task priority based on SLA requirements
     Priority_t priority = LOW_PRIORITY;
     switch(task_info.required_sla) {
         case SLA0: priority = HIGH_PRIORITY; break;
@@ -61,12 +61,12 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         case SLA3: priority = LOW_PRIORITY; break;
     }
 
-    // Greedy: Find first available VM that meets requirements
+    // Find existing VM that meets requirements
     for(auto vm_id : vms) {
         VMInfo_t vm_info = VM_GetInfo(vm_id);
         MachineInfo_t machine_info = Machine_GetInfo(vm_info.machine_id);
 
-        // will they match
+        // Check if VM matches task's requirements
         if(vm_info.vm_type != task_info.required_vm ||
            vm_info.cpu != task_info.required_cpu ||
            (task_info.gpu_capable && !machine_info.gpus) ||
@@ -74,13 +74,13 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
             continue;
         }
 
-        // use the first matching VM
+        // Assign task
         VM_AddTask(vm_id, task_id, priority);
         task_to_vms[task_id] = vm_id;
         return;
     }
 
-    // If no VM found, create new one on first compatible machine
+    // If no suitable VM, create a new one on first compatible machine
     for(auto machine_id : machines) {
         MachineInfo_t machine_info = Machine_GetInfo(machine_id);
         
@@ -144,21 +144,17 @@ void HandleTaskCompletion(Time_t time, TaskId_t task_id) {
 }
 
 void MemoryWarning(Time_t time, MachineId_t machine_id) {
-    // The simulator is alerting you that machine identified by machine_id is overcommitted
     SimOutput("MemoryWarning(): Overflow at " + to_string(machine_id) + " was detected at time " + to_string(time), 0);
 }
 
 void MigrationDone(Time_t time, VMId_t vm_id) {
-    // Log migration completion
+    // Log migration completion and remove VM from migration list
     SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " completed at time " + to_string(time), 4);
-    // delete from migrating list
     vms_migrating.erase(vm_id);
-    // Complete further migration steps 
     Scheduler.MigrationComplete(time, vm_id);
 }
 
 void SchedulerCheck(Time_t time) {
-    // This function is called periodically by the simulator, no specific event
     SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 4);
     Scheduler.PeriodicCheck(time);
     static unsigned counts = 0;
@@ -167,11 +163,10 @@ void SchedulerCheck(Time_t time) {
 }
 
 void SimulationComplete(Time_t time) {
-    // This function is called before the simulation terminates Add whatever you feel like.
     cout << "SLA violation report" << endl;
     cout << "SLA0: " << GetSLAReport(SLA0) << "%" << endl;
     cout << "SLA1: " << GetSLAReport(SLA1) << "%" << endl;
-    cout << "SLA2: " << GetSLAReport(SLA2) << "%" << endl;     // SLA3 do not have SLA violation issues
+    cout << "SLA2: " << GetSLAReport(SLA2) << "%" << endl;
     cout << "Total Energy " << Machine_GetClusterEnergy() << "KW-Hour" << endl;
     cout << "Simulation run finished in " << double(time)/1000000 << " seconds" << endl;
     SimOutput("SimulationComplete(): Simulation finished at time " + to_string(time), 4);
