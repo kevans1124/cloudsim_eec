@@ -1,83 +1,108 @@
+// Scheduler.cpp
+// CloudSim
 //
-//  Scheduler.cpp
-//  CloudSim
-//
-//  Created by ELMOOTAZBELLAH ELNOZAHY on 10/20/24.
+// Created by ELMOOTAZBELLAH ELNOZAHY on 10/20/24.
 //
 
+#include "Interfaces.h"
 #include "Scheduler.hpp"
+#include <climits>
+#include <unordered_set>
+#include <algorithm>
 
-static bool migrating = false;
-static unsigned active_machines = 16;
+
+
+
+// Global state variables
+//static bool migrating = true; 
+static vector<VMId_t> vms;
+static vector<MachineId_t> machines;
+static unordered_map<TaskId_t, VMId_t> task_to_vms;
+static unordered_set<VMId_t> vms_migrating;
+static unsigned active_machines;
+
+
 
 void Scheduler::Init() {
-    // Find the parameters of the clusters
-    // Get the total number of machines
-    // For each machine:
-    //      Get the type of the machine
-    //      Get the memory of the machine
-    //      Get the number of CPUs
-    //      Get if there is a GPU or not
-    // 
-    SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
-    SimOutput("Scheduler::Init(): Initializing scheduler", 1);
-    for(unsigned i = 0; i < active_machines; i++)
-        vms.push_back(VM_Create(LINUX, X86));
+    // find total machines from the system
+    unsigned total_machines = Machine_GetTotal();
+    active_machines = total_machines;
+
+    // fill 'machines' vector with all MachineId_t
     for(unsigned i = 0; i < active_machines; i++) {
-        machines.push_back(MachineId_t(i));
-    }    
-    for(unsigned i = 0; i < active_machines; i++) {
-        VM_Attach(vms[i], machines[i]);
+        MachineId_t machine_id = i;
+        machines.push_back(machine_id);
     }
 
-    bool dynamic = false;
-    if(dynamic)
-        for(unsigned i = 0; i<4 ; i++)
-            for(unsigned j = 0; j < 8; j++)
-                Machine_SetCorePerformance(MachineId_t(0), j, P3);
-    // Turn off the ARM machines
-    for(unsigned i = 24; i < Machine_GetTotal(); i++)
-        Machine_SetState(MachineId_t(i), S5);
+    // Create and attach VMs based on each machine's CPU type and GPU requirements
+    for(auto machine_id : machines) {
+        MachineInfo_t machine_info = Machine_GetInfo(machine_id);
 
-    SimOutput("Scheduler::Init(): VM ids are " + to_string(vms[0]) + " ahd " + to_string(vms[1]), 3);
-}
+        VMType_t vm_type = (machine_info.cpu == POWER) ? AIX : LINUX;
 
-void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
-    // Update your data structure. The VM now can receive new tasks
+        // Handle VM creation based on GPU availability
+        VMId_t vm_id = VM_Create(vm_type, machine_info.cpu);
+        vms.push_back(vm_id);
+        VM_Attach(vm_id, machine_id);
+        SimOutput("Init(): VM " + to_string(vm_id) + " created and attached to Machine " + to_string(machine_id), 3);
+    }
 }
 
 void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
-    // Get the task parameters
-    //  IsGPUCapable(task_id);
-    //  GetMemory(task_id);
-    //  RequiredVMType(task_id);
-    //  RequiredSLA(task_id);
-    //  RequiredCPUType(task_id);
-    // Decide to attach the task to an existing VM, 
-    //      vm.AddTask(taskid, Priority_T priority); or
-    // Create a new VM, attach the VM to a machine
-    //      VM vm(type of the VM)
-    //      vm.Attach(machine_id);
-    //      vm.AddTask(taskid, Priority_t priority) or
-    // Turn on a machine, create a new VM, attach it to the VM, then add the task
-    //
-    // Turn on a machine, migrate an existing VM from a loaded machine....
-    //
-    // Other possibilities as desired
-    Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
-    if(migrating) {
-        VM_AddTask(vms[0], task_id, priority);
+    TaskInfo_t task_info = GetTaskInfo(task_id);
+    unsigned task_memory = GetTaskMemory(task_id);
+
+    // Set priority based on SLA
+    Priority_t priority = LOW_PRIORITY;
+    switch(task_info.required_sla) {
+        case SLA0: priority = HIGH_PRIORITY; break;
+        case SLA1: priority = MID_PRIORITY; break;
+        case SLA2: priority = MID_PRIORITY; break;
+        case SLA3: priority = LOW_PRIORITY; break;
     }
-    else {
-        VM_AddTask(vms[task_id % active_machines], task_id, priority);
-    }// Skeleton code, you need to change it according to your algorithm
+
+    // Greedy: Find first available VM that meets requirements
+    for(auto vm_id : vms) {
+        VMInfo_t vm_info = VM_GetInfo(vm_id);
+        MachineInfo_t machine_info = Machine_GetInfo(vm_info.machine_id);
+
+        // will they match
+        if(vm_info.vm_type != task_info.required_vm ||
+           vm_info.cpu != task_info.required_cpu ||
+           (task_info.gpu_capable && !machine_info.gpus) ||
+           machine_info.memory_size - machine_info.memory_used < task_memory) {
+            continue;
+        }
+
+        // use the first matching VM
+        VM_AddTask(vm_id, task_id, priority);
+        task_to_vms[task_id] = vm_id;
+        return;
+    }
+
+    // If no VM found, create new one on first compatible machine
+    for(auto machine_id : machines) {
+        MachineInfo_t machine_info = Machine_GetInfo(machine_id);
+        
+        if(machine_info.cpu == task_info.required_cpu &&
+           (!task_info.gpu_capable || machine_info.gpus) &&
+           machine_info.memory_size - machine_info.memory_used >= task_memory) {
+            
+            VMId_t vm_new = VM_Create(task_info.required_vm, task_info.required_cpu);
+            VM_Attach(vm_new, machine_id);
+            vms.push_back(vm_new);
+            VM_AddTask(vm_new, task_id, priority);
+            task_to_vms[task_id] = vm_new;
+            return;
+        }
+    }
+}
+
+void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
-    // This method should be called from SchedulerCheck()
-    // SchedulerCheck is called periodically by the simulator to allow you to monitor, make decisions, adjustments, etc.
-    // Unlike the other invocations of the scheduler, this one doesn't report any specific event
-    // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
+
 }
 
 void Scheduler::Shutdown(Time_t time) {
@@ -93,10 +118,10 @@ void Scheduler::Shutdown(Time_t time) {
 }
 
 void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
-    // Do any bookkeeping necessary for the data structures
-    // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
-    // This is an opportunity to make any adjustments to optimize performance/energy
-    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
+    auto task = task_to_vms.find(task_id);
+    if(task != task_to_vms.end()) {
+        task_to_vms.erase(task);
+    }
 }
 
 // Public interface below
@@ -124,10 +149,12 @@ void MemoryWarning(Time_t time, MachineId_t machine_id) {
 }
 
 void MigrationDone(Time_t time, VMId_t vm_id) {
-    // The function is called on to alert you that migration is complete
-    SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " was completed at time " + to_string(time), 4);
+    // Log migration completion
+    SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " completed at time " + to_string(time), 4);
+    // delete from migrating list
+    vms_migrating.erase(vm_id);
+    // Complete further migration steps 
     Scheduler.MigrationComplete(time, vm_id);
-    migrating = false;
 }
 
 void SchedulerCheck(Time_t time) {
@@ -136,10 +163,7 @@ void SchedulerCheck(Time_t time) {
     Scheduler.PeriodicCheck(time);
     static unsigned counts = 0;
     counts++;
-    if(counts == 10) {
-        migrating = true;
-        VM_Migrate(1, 9);
-    }
+
 }
 
 void SimulationComplete(Time_t time) {
@@ -156,10 +180,9 @@ void SimulationComplete(Time_t time) {
 }
 
 void SLAWarning(Time_t time, TaskId_t task_id) {
-    
+
 }
 
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {
     // Called in response to an earlier request to change the state of a machine
 }
-
